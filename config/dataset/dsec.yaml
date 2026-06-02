@@ -1,0 +1,91 @@
+defaults:
+  - base
+
+name: dsec
+
+# DSEC root. This should be the directory that contains train/ and test/.
+path: /data4/yhtang/dataset/DSEC_det/data/
+
+# Keep the representation setting consistent with Gen1/Gen4.
+# The DSEC adapter builds this representation on-the-fly from raw events.
+ev_repr_name: 'stacked_histogram_dt=50_nbins=10'
+bins: 10
+count_cutoff: 10
+fastmode: True
+
+# DSEC original event camera resolution.
+input_hw: [480, 640]
+resolution_hw: [480, 640]
+
+# Dataset-level default, like Gen1's dataset yaml.
+# The experiment config can override this to 21.
+sequence_length: 11
+
+# Make DSEC spatial size close to Gen1: 480x640 -> 240x320.
+# The adapter downscales event representations with nearest-exact and scales boxes by 0.5.
+downsample_by_factor_2: True
+only_load_end_labels: False
+
+train_val_test_split:
+  train:
+    - thun_00_a
+    - interlaken_00_c
+    - interlaken_00_d
+    - interlaken_00_e
+    - interlaken_00_f
+    - interlaken_00_g
+    - zurich_city_00_a
+    - zurich_city_00_b
+    - zurich_city_01_a
+    - zurich_city_01_b
+    - zurich_city_01_c
+    - zurich_city_01_d
+    - zurich_city_01_e
+    - zurich_city_01_f
+    - zurich_city_02_a
+    - zurich_city_02_b
+    - zurich_city_02_c
+    - zurich_city_02_d
+    - zurich_city_02_e
+    - zurich_city_03_a
+    - zurich_city_04_a
+    - zurich_city_04_b
+    - zurich_city_04_c
+    - zurich_city_04_d
+    - zurich_city_04_e
+    - zurich_city_04_f
+    - zurich_city_05_a
+    - zurich_city_05_b
+    - zurich_city_06_a
+    - zurich_city_07_a
+    - zurich_city_08_a
+    - zurich_city_09_a
+    - zurich_city_09_b
+    - zurich_city_09_c
+    - zurich_city_09_d
+    - zurich_city_09_e
+    - zurich_city_10_a
+    - zurich_city_10_b
+    - zurich_city_11_a
+    - zurich_city_11_b
+    - zurich_city_11_c
+  val:
+    - zurich_city_16_a
+    - zurich_city_17_a
+    - zurich_city_18_a
+    - zurich_city_19_a
+    - zurich_city_20_a
+  test:
+    - thun_01_a
+    - thun_01_b
+    - thun_02_a
+    - interlaken_00_a
+    - interlaken_00_b
+    - interlaken_01_a
+    - zurich_city_12_a
+    - zurich_city_13_a
+    - zurich_city_13_b
+    - zurich_city_14_a
+    - zurich_city_14_b
+    - zurich_city_14_c
+    - zurich_city_15_a

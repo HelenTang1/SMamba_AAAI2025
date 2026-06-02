@@ -2,6 +2,7 @@ import pytorch_lightning as pl
 from omegaconf import DictConfig
 
 from modules.data.genx import DataModule as genx_data_module
+from modules.data.dsec import DataModule as dsec_data_module
 from modules.detection import Module as rnn_det_module
 
 
@@ -25,4 +26,11 @@ def fetch_data_module(config: DictConfig) -> pl.LightningDataModule:
                                 num_workers_eval=num_workers_eval,
                                 batch_size_train=batch_size_train,
                                 batch_size_eval=batch_size_eval)
+    if dataset_str == 'dsec':
+        return dsec_data_module(config.dataset,
+                                num_workers_train=num_workers_train,
+                                num_workers_eval=num_workers_eval,
+                                batch_size_train=batch_size_train,
+                                batch_size_eval=batch_size_eval)
+
     raise NotImplementedError

@@ -26,6 +26,7 @@ class DatasetType(Enum):
     GEN1 = auto()
     GEN4 = auto()
     eTram = auto()
+    DSEC = auto()
 
 
 class DatasetMode(Enum):

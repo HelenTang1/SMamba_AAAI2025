@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - default
+
+# Gen1-like model-size base for DSEC after downsample_by_factor_2:
+# DSEC 480x640 -> 240x320, close to Gen1 240x304.
+model:
+  backbone:
+    embed_dim: 64
+    resolution_hw: [256, 320]
+    gaussian_kernel: 5
+    factor: 1.2
+  fpn:
+    depth: 0.67

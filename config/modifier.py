@@ -16,7 +16,7 @@ def dynamically_modify_train_config(config: DictConfig):
         dataset_cfg = config.dataset
 
         dataset_name = dataset_cfg.name
-        assert dataset_name in {'gen1', 'gen4', 'etram'}
+        assert dataset_name in {'gen1', 'gen4', 'etram', 'dsec'}
         dataset_hw = get_dataloading_hw(dataset_config=dataset_cfg)
 
         mdl_cfg = config.model
@@ -42,7 +42,14 @@ def dynamically_modify_train_config(config: DictConfig):
             else:
                 print(f'{backbone_name=} not available')
                 raise NotImplementedError
-            num_classes = 2 if dataset_name == 'gen1' else 3
+            if dataset_name == 'gen1':
+                num_classes = 2
+            elif dataset_name in {'gen4', 'etram'}:
+                num_classes = 3
+            elif dataset_name == 'dsec':
+                num_classes = 8
+            else:
+                raise NotImplementedError(dataset_name)
             mdl_cfg.head.num_classes = num_classes
             print(f'Set {num_classes=} for detection head')
         else:
