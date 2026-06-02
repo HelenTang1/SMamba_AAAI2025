@@ -163,7 +163,14 @@ class DSECReader:
     def _to_long_tensor(x: Any) -> torch.Tensor:
         if isinstance(x, torch.Tensor):
             return x.long()
-        return torch.from_numpy(np.asarray(x)).long()
+
+        x_np = np.asarray(x)
+
+        # torch.from_numpy does not support numpy.uint16 / uint32 / uint64.
+        if np.issubdtype(x_np.dtype, np.unsignedinteger):
+            x_np = x_np.astype(np.int64, copy=False)
+
+        return torch.from_numpy(x_np).long()
 
     @staticmethod
     def _resize_chw_tensor(
