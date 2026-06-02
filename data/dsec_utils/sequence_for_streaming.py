@@ -12,26 +12,30 @@ from data.utils.augmentor import RandomSpatialAugmentorGenX
 from data.utils.types import DataType, LoaderDataDictGenX
 
 
-def _get_rel_idx_range_indices(indices: List[int], max_len: int) -> List[Tuple[int, int]]:
+def _get_position_range_indices(label_positions: List[int], max_len: int) -> List[Tuple[int, int]]:
+    """Split train-stream ranges using positions of frames that actually have labels.
+
+    This mirrors GenX _get_ev_repr_range_indices(), but DSEC on-the-fly data
+    uses rel_indices instead of precomputed repr_idx. The input must therefore
+    be positions in the sorted rel_indices list for frames with valid boxes.
     """
-    Split a sequence into ranges such that each streaming sample is likely to
-    contain at least one labeled DSEC index. This mirrors SMamba's GenX logic,
-    but operates on positions inside rel_indices rather than precomputed repr_idx.
-    """
-    if len(indices) == 0:
+    if len(label_positions) == 0:
         return []
 
+    label_positions = sorted(label_positions)
     out: List[Tuple[int, int]] = []
-    start_pos = 0
-    last_pos = 0
 
-    for pos in range(1, len(indices)):
-        if indices[pos] - indices[last_pos] > max_len:
-            out.append((max(0, start_pos - max_len + 1), last_pos + 1))
-            start_pos = pos
-        last_pos = pos
+    meta_start = 0
+    for i in range(1, len(label_positions)):
+        if label_positions[i] - label_positions[i - 1] > max_len:
+            start = max(label_positions[meta_start] - max_len + 1, 0)
+            stop = label_positions[i - 1] + 1
+            out.append((start, stop))
+            meta_start = i
 
-    out.append((max(0, start_pos - max_len + 1), last_pos + 1))
+    start = max(label_positions[meta_start] - max_len + 1, 0)
+    stop = label_positions[-1] + 1
+    out.append((start, stop))
     return out
 
 
@@ -82,8 +86,16 @@ class DSECSequenceForIter(MapDataPipe):
         seq_name: str,
         rel_indices: List[int],
     ) -> List["DSECSequenceForIter"]:
-        range_positions_list = _get_rel_idx_range_indices(
-            indices=sorted(rel_indices),
+        rel_indices = sorted(rel_indices)
+        valid_label_rel_indices = set(
+            reader.build_valid_label_rel_indices(seq_name=seq_name, rel_indices=rel_indices)
+        )
+        label_positions = [
+            pos for pos, rel_idx in enumerate(rel_indices)
+            if rel_idx in valid_label_rel_indices
+        ]
+        range_positions_list = _get_position_range_indices(
+            label_positions=label_positions,
             max_len=reader.sequence_length,
         )
 

@@ -165,11 +165,10 @@ class DSECReader:
             return x.long()
 
         x_np = np.asarray(x)
-
-        # torch.from_numpy does not support numpy.uint16 / uint32 / uint64.
+        # torch.from_numpy does not support uint16/uint32/uint64.
+        # DSEC event coordinates are commonly uint16.
         if np.issubdtype(x_np.dtype, np.unsignedinteger):
             x_np = x_np.astype(np.int64, copy=False)
-
         return torch.from_numpy(x_np).long()
 
     @staticmethod
@@ -267,6 +266,25 @@ class DSECReader:
         labels = torch.from_numpy(labels_np).float()
         obj_labels = ObjectLabels(object_labels=labels, input_size_hw=self.output_hw)
         return obj_labels if len(obj_labels) > 0 else None
+
+
+    def has_valid_object_labels(self, seq_name: str, rel_idx: int) -> bool:
+        """Return True if this DSEC index has at least one usable object box.
+
+        This is used to mimic SMamba GenX random/stream sampling, where random
+        samples end at labeled frames and train-stream ranges are split using
+        labeled frame positions.
+        """
+        tracks = self.dsec.get_tracks(rel_idx, directory_name=seq_name)
+        obj_labels = self.build_object_labels(tracks)
+        return obj_labels is not None and len(obj_labels) > 0
+
+    def build_valid_label_rel_indices(self, seq_name: str, rel_indices: List[int]) -> List[int]:
+        valid_rel_indices: List[int] = []
+        for rel_idx in rel_indices:
+            if self.has_valid_object_labels(seq_name=seq_name, rel_idx=rel_idx):
+                valid_rel_indices.append(rel_idx)
+        return valid_rel_indices
 
     def get_padding_representation(self) -> torch.Tensor:
         c = self.representation.get_shape()[0]

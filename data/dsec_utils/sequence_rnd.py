@@ -27,6 +27,10 @@ class DSECSequenceForRandomAccess:
         self.only_load_end_labels = bool(only_load_end_labels)
         self.seq_len = self.reader.sequence_length
 
+        self.seq_to_valid_label_rel_indices = {
+            seq_name: set(self.reader.build_valid_label_rel_indices(seq_name, rel_indices))
+            for seq_name, rel_indices in self.seq_to_rel_indices.items()
+        }
         self.samples = self._build_endpoint_samples()
         if len(self.samples) == 0:
             raise RuntimeError(
@@ -41,8 +45,17 @@ class DSECSequenceForRandomAccess:
         for seq_name, rel_indices in self.seq_to_rel_indices.items():
             if len(rel_indices) < self.seq_len:
                 continue
+
+            valid_label_rel_indices = self.seq_to_valid_label_rel_indices.get(seq_name, set())
+            if len(valid_label_rel_indices) == 0:
+                continue
+
+            # Like GenX SequenceForRandomAccess: each random sample should end
+            # at a frame with valid labels. Otherwise zoom-in augmentation cannot
+            # sample an object-centered crop and will warn frequently.
             for end_pos in range(self.seq_len - 1, len(rel_indices)):
-                samples.append((seq_name, end_pos))
+                if rel_indices[end_pos] in valid_label_rel_indices:
+                    samples.append((seq_name, end_pos))
         return samples
 
     def __len__(self) -> int:
