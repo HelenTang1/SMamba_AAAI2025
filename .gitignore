@@ -225,3 +225,7 @@ __pycache__/
 .hydra/
 outputs/
 multirun/
+
+# debug files
+debug_scripts/**/*.csv
+debug_scripts/**/*.png
