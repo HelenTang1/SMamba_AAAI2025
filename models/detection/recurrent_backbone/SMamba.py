@@ -23,6 +23,7 @@ import torch.utils.checkpoint as checkpoint
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, trunc_normal_
 from models.detection.recurrent_backbone.utils import *
+from models.detection.recurrent_backbone.eventddt_priority import EventDDTTokenPriorityAdapter
 
 DropPath.__repr__ = lambda self: f"timm.DropPath({self.drop_prob})"
 
@@ -66,6 +67,23 @@ class RNNDetector(BaseDetector):
         num_stages = len(depths)
         assert num_stages == 4
         dims=[64, 128, 256, 512]
+        priority_cfg = mdl_config.get("eventddt_priority", None)
+        self.use_eventddt_priority = (
+            priority_cfg is not None and priority_cfg.get("enable", False)
+        )
+
+        if self.use_eventddt_priority:
+            self.eventddt_priority = EventDDTTokenPriorityAdapter(
+                stage_dims=dims,
+                token_dim=priority_cfg.get("token_dim", 512),
+                hidden_dim=priority_cfg.get("hidden_dim", 128),
+                detach_tokens=priority_cfg.get("detach_tokens", True),
+                rank_decay=priority_cfg.get("rank_decay", 3.0),
+                temperature=priority_cfg.get("temperature", 0.07),
+                first_k_tokens=priority_cfg.get("first_k_tokens", None),
+            )
+        else:
+            self.eventddt_priority = None
         if isinstance(dims, int):
             dims = [int(dims * 2 ** i_layer) for i_layer in range(self.num_layers)]
         self.num_layers = len(depths)
@@ -179,8 +197,63 @@ class RNNDetector(BaseDetector):
             (norm_layer(embed_dim) if patch_norm else nn.Identity()),
         )
 
-    def forward(self, x: th.Tensor, prev_states: Optional[LstmStates] = None, token_mask: Optional[th.Tensor] = None) \
-            -> Tuple[BackboneFeatures, LstmStates]:
+    def _make_sparse_scan_indices_from_priority(
+        self,
+        priority_flat: torch.Tensor,
+        sort_priority_flat: torch.Tensor,
+    ):
+        """
+        Convert priority scores into SMamba sparse scanning indices.
+
+        Args:
+            priority_flat:
+                B, H*W, used to select kept tokens.
+
+            sort_priority_flat:
+                B, H*W, used to decide local scan order.
+
+        Returns:
+            index_token:
+                B, 1, L_keep
+
+            indices:
+                B, 1, L_keep
+        """
+        B, L = priority_flat.shape
+
+        # Same threshold logic as original SMamba.
+        # Original:
+        # cc = sum(x_time) / (H*W * factor)
+        cc = torch.sum(priority_flat, dim=1) / (L * self.factor)
+
+        keep_mask = priority_flat >= cc[:, None]
+        K = torch.sum(keep_mask, dim=1).clamp(min=1, max=L)
+
+        max_k = int(K.max().item())
+
+        # Index of kept tokens
+        index_token = torch.topk(
+            priority_flat,
+            k=max_k,
+            dim=1,
+            largest=True,
+            sorted=False,
+        )[1]
+        index_token.requires_grad_(False)
+
+        # Information-prioritized local sorting
+        selected_sort_score = sort_priority_flat.gather(dim=1, index=index_token)
+        indices = torch.argsort(selected_sort_score, dim=1)
+        indices.requires_grad_(False)
+
+        index_token = index_token.unsqueeze(1)
+        indices = indices.unsqueeze(1)
+
+        return index_token, indices
+
+    def forward(self, x: th.Tensor, prev_states: Optional[LstmStates] = None, 
+                token_mask: Optional[th.Tensor] = None, 
+                eventddt_tokens: Optional[th.Tensor] = None) -> Tuple[BackboneFeatures, LstmStates]:
         # Temporal Continuity Assessment
         # B,C,H,W
         x_time = x.clone() 
@@ -208,32 +281,62 @@ class RNNDetector(BaseDetector):
                 # Spatial Continuity Assessment
                 blur_layer = get_gaussian_kernel(kernel_size = self.gaussian_kernel).cuda()
                 x_time = blur_layer(x_time)
-            if stage_idx in [0, 1]:
-                # Local Window Sorting for stage 1 and 2
-                x_time2 = self.maxpl(x_time)
-                x_time2 = self.unspamle(x_time2)
-                x_time2 = x_time2.flatten(2, 3)
+            use_eventddt_priority_now = (
+                self.use_eventddt_priority
+                and eventddt_tokens is not None
+            )
+
+            if use_eventddt_priority_now:
+                # x is current SMamba stage feature map: B, C, H, W
+                Bx, Cx, Hx, Wx = x.shape
+
+                # EventDDT-token-guided spatial priority: B, Hx*Wx
+                priority_flat = self.eventddt_priority(
+                    x=x,
+                    event_tokens=eventddt_tokens,
+                    stage_idx=stage_idx,
+                )
+
+                priority_map = priority_flat.view(Bx, 1, Hx, Wx)
+
+                if stage_idx in [0, 1]:
+                    # Keep SMamba's original local-window sorting idea,
+                    # but use EventDDT-guided priority instead of x_time.
+                    sort_priority_map = self.maxpl(priority_map)
+                    sort_priority_map = self.unspamle(sort_priority_map)
+
+                    # Safety in case H/W is not exactly divisible by 4.
+                    if sort_priority_map.shape[-2:] != (Hx, Wx):
+                        sort_priority_map = F.interpolate(
+                            sort_priority_map,
+                            size=(Hx, Wx),
+                            mode="nearest",
+                        )
+
+                    sort_priority_flat = sort_priority_map.flatten(2, 3).squeeze(1)
+                else:
+                    sort_priority_flat = priority_flat
+
+                index_token, indices = self._make_sparse_scan_indices_from_priority(
+                    priority_flat=priority_flat,
+                    sort_priority_flat=sort_priority_flat,
+                )
+
             else:
-                x_time2 = x_time.flatten(2, 3)
+                # Original SMamba handcrafted priority.
+                if stage_idx in [0, 1]:
+                    x_time2 = self.maxpl(x_time)
+                    x_time2 = self.unspamle(x_time2)
+                    x_time2 = x_time2.flatten(2, 3)
+                else:
+                    x_time2 = x_time.flatten(2, 3)
 
-            x_time = x_time.flatten(2, 3).squeeze(1)
-            # Sparsification threshold
-            cc = torch.sum(x_time, dim=1) / (H*W * self.factor)
-            gts = []
-            for batch_id in range(x_time.shape[0]):
-                gt = x_time[batch_id] >= cc[batch_id]
-                gts.append(gt)
-            gts = torch.stack(gts, dim=0)
-            K = torch.sum(gts, dim=1)
+                x_time_flat = x_time.flatten(2, 3).squeeze(1)
 
-            # Index of kept tokens
-            index_token = torch.topk(x_time, k=K.max(), dim=1, largest=True, sorted=False)[1]
-            index_token.requires_grad_(False)
-            # Information-Prioritized Local Sorting
-            indices = torch.argsort(x_time2.squeeze(1).gather(dim=1, index=index_token), dim=1)
-            indices.requires_grad_(False)
-            index_token = index_token.unsqueeze(1)
-            indices = indices.unsqueeze(1)
+                index_token, indices = self._make_sparse_scan_indices_from_priority(
+                    priority_flat=x_time_flat,
+                    sort_priority_flat=x_time2.squeeze(1),
+                )
             
             x, state, x_fpn = stage(x, index_token, indices, prev_states[stage_idx])
 
@@ -241,9 +344,10 @@ class RNNDetector(BaseDetector):
             stage_number = stage_idx + 1
             output[stage_number] = x_fpn
 
-            x_time = x_time.unsqueeze(1).view(B, C, H, W)
-            x_time = self.index_down(x_time)
-            B, C, H, W = x_time.shape
+            if not use_eventddt_priority_now:
+                x_time = x_time.unsqueeze(1).view(B, C, H, W)
+                x_time = self.index_down(x_time)
+                B, C, H, W = x_time.shape
         return output, states
 
 class RNNDetectorStage(nn.Module):

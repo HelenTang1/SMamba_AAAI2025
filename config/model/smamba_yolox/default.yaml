@@ -43,6 +43,14 @@ model:
         dws_conv_only_hidden: True
         dws_conv_kernel_size: 3
         drop_cell_update: 0
+    eventddt_priority:
+      enable: true
+      token_dim: 512
+      hidden_dim: 128
+      detach_tokens: true
+      rank_decay: 3.0 # larger value means more belief in the first few tokens 
+      temperature: 0.07 # similarity sharpness
+      first_k_tokens: 250 # if not null, only use first k tokens
   fpn:
     name: PAFPN
     compile:
