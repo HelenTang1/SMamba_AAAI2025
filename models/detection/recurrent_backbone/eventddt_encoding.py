@@ -153,7 +153,7 @@ class EventDDTEncodingBridge(nn.Module):
             )
             from models.event_compact_tokenizer import EventCompactTokenizer
 
-            event_tokenizer = build_tokenizer_model(cfg)
+            event_tokenizer = build_tokenizer_model(cfg, encoder_only=True)
             if isinstance(event_tokenizer, EventCompactTokenizer):
                 include_event_pretrained = True
             else:
