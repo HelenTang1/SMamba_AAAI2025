@@ -256,11 +256,29 @@ class RNNDetector(BaseDetector):
                 eventddt_tokens: Optional[th.Tensor] = None) -> Tuple[BackboneFeatures, LstmStates]:
         # Temporal Continuity Assessment
         # B,C,H,W
-        x_time = x.clone() 
-        for i in range(x_time.shape[1]//2):
-            x_time[:,2*i,:,:] = x_time[:,2*i,:,:] * (i+1)
-            x_time[:,2*i+1,:,:] = x_time[:,2*i+1,:,:] * (i+1)
-        x_time = torch.sum(x_time, dim=1, keepdim=True)
+        # GENX / SMamba event layout:
+        #   [pol0_bin0, ..., pol0_bin9, pol1_bin0, ..., pol1_bin9]
+        #
+        # Therefore the temporal weights should be:
+        #   [1,2,...,10, 1,2,...,10]
+        B, C, H, W = x.shape
+        assert C % 2 == 0, f"Expected 2 * n_bins channels, got {C}"
+
+        n_bins = C // 2
+
+        temporal_weights = torch.arange(
+            1,
+            n_bins + 1,
+            device=x.device,
+            dtype=x.dtype,
+        )
+
+        temporal_weights = torch.cat(
+            [temporal_weights, temporal_weights],
+            dim=0,
+        ).view(1, C, 1, 1)
+
+        x_time = (x * temporal_weights).sum(dim=1, keepdim=True)
         # Average pooling
         # B,1,H,W
         x_time = self.time_embed(x_time)
@@ -279,7 +297,7 @@ class RNNDetector(BaseDetector):
         for stage_idx, stage in enumerate(self.stages):
             if stage_idx == 0:
                 # Spatial Continuity Assessment
-                blur_layer = get_gaussian_kernel(kernel_size = self.gaussian_kernel).cuda()
+                blur_layer = get_gaussian_kernel(kernel_size=self.gaussian_kernel).to(device=x_time.device, dtype=x_time.dtype)
                 x_time = blur_layer(x_time)
             use_eventddt_priority_now = (
                 self.use_eventddt_priority
@@ -345,7 +363,6 @@ class RNNDetector(BaseDetector):
             output[stage_number] = x_fpn
 
             if not use_eventddt_priority_now:
-                x_time = x_time.unsqueeze(1).view(B, C, H, W)
                 x_time = self.index_down(x_time)
                 B, C, H, W = x_time.shape
         return output, states

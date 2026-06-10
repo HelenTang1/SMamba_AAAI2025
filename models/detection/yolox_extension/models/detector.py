@@ -64,9 +64,14 @@ class YoloXDetector(th.nn.Module):
                 x: th.Tensor,
                 previous_states: Optional[LstmStates] = None,
                 retrieve_detections: bool = True,
-                targets: Optional[th.Tensor] = None) -> \
+                targets: Optional[th.Tensor] = None,
+                eventddt_tokens: Optional[th.Tensor] = None) -> \
             Tuple[Union[th.Tensor, None], Union[Dict[str, th.Tensor], None], LstmStates]:
-        backbone_features, states = self.forward_backbone(x, previous_states)
+        backbone_features, states = self.forward_backbone(
+            x,
+            previous_states,
+            eventddt_tokens=eventddt_tokens,
+        )
         outputs, losses = None, None
         if not retrieve_detections:
             assert targets is None

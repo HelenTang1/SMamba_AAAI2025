@@ -6,13 +6,14 @@ import pytorch_lightning as pl
 import torch
 import torch as th
 import torch.distributed as dist
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 
 from data.genx_utils.labels import ObjectLabels
 from data.utils.types import DataType, LstmStates, ObjDetOutput, DatasetSamplingMode, MambaStates
 from models.detection.yolox.utils.boxes import postprocess
 from models.detection.yolox_extension.models.detector import YoloXDetector
+from models.detection.recurrent_backbone.eventddt_encoding import EventDDTEncodingBridge
 from utils.evaluation.prophesee.evaluator import PropheseeEvaluator
 from utils.evaluation.prophesee.io.box_loading import to_prophesee
 from utils.padding import InputPadderFromShape
@@ -31,6 +32,15 @@ class Module(pl.LightningModule):
         self.input_padder = InputPadderFromShape(desired_hw=in_res_hw)
 
         self.mdl = YoloXDetector(self.mdl_config)
+
+        eventddt_encoding_cfg = self.mdl_config.backbone.get("eventddt_encoding", None)
+
+        if eventddt_encoding_cfg is not None and eventddt_encoding_cfg.get("enable", False):
+            self.eventddt_encoder = EventDDTEncodingBridge(
+                **OmegaConf.to_container(eventddt_encoding_cfg, resolve=True)
+            )
+        else:
+            self.eventddt_encoder = None
 
         self.mode_2_rnn_states: Dict[Mode, RNNStates] = {
             Mode.TRAIN: RNNStates(),
@@ -90,10 +100,12 @@ class Module(pl.LightningModule):
                 retrieve_detections: bool = True,
                 targets=None) \
             -> Tuple[Union[th.Tensor, None], Union[Dict[str, th.Tensor], None], MambaStates]:
+        eventddt_tokens = self._encode_eventddt_tokens(event_tensor)
         return self.mdl(x=event_tensor,
                         previous_states=previous_states,
                         retrieve_detections=retrieve_detections,
-                        targets=targets)
+                        targets=targets,
+                        eventddt_tokens=eventddt_tokens)
     # def forward(self,
     #             event_tensor: th.Tensor,
     #             previous_states: Optional[LstmStates] = None) \
@@ -107,7 +119,12 @@ class Module(pl.LightningModule):
 
     def get_data_from_batch(self, batch: Any):
         return batch['data']
-
+    
+    def _encode_eventddt_tokens(self, ev_tensors: th.Tensor) -> Optional[th.Tensor]:
+        if self.eventddt_encoder is None:
+            return None
+        return self.eventddt_encoder(ev_tensors)
+    
     def training_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
         batch = merge_mixed_batches(batch)
         data = self.get_data_from_batch(batch)
@@ -149,9 +166,11 @@ class Module(pl.LightningModule):
             else:
                 assert self.mode_2_hw[mode] == ev_tensors.shape[-2:]
 
+            eventddt_tokens = self._encode_eventddt_tokens(ev_tensors)
             backbone_features, states = self.mdl.forward_backbone(x=ev_tensors,
                                                                   previous_states=prev_states,
-                                                                  token_mask=token_masks)
+                                                                  token_mask=token_masks,
+                                                                  eventddt_tokens=eventddt_tokens)
             prev_states = states
 
             current_labels, valid_batch_indices = sparse_obj_labels[tidx].get_valid_labels_and_batch_indices()
@@ -246,7 +265,12 @@ class Module(pl.LightningModule):
             else:
                 assert self.mode_2_hw[mode] == ev_tensors.shape[-2:]
 
-            backbone_features, states = self.mdl.forward_backbone(x=ev_tensors, previous_states=prev_states)
+            eventddt_tokens = self._encode_eventddt_tokens(ev_tensors)
+            backbone_features, states = self.mdl.forward_backbone(
+                x=ev_tensors,
+                previous_states=prev_states,
+                eventddt_tokens=eventddt_tokens,
+            )
             prev_states = states
 
             if collect_predictions:

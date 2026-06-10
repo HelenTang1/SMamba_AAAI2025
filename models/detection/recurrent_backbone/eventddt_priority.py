@@ -5,20 +5,10 @@ import torch.nn.functional as F
 
 class EventDDTTokenPriorityAdapter(nn.Module):
     """
-    Convert ordered EventDDT encoder output tokens into spatial priority scores
-    for SMamba sparse scanning.
+    Convert ordered EventDDT tokens into SMamba patch-level priority scores.
 
-    Important assumption:
+    Assumption:
         Earlier EventDDT tokens are more important.
-
-    x:
-        SMamba stage feature map, shape (B, C, H, W)
-
-    event_tokens:
-        EventDDT encoder output tokens, shape (B, K, D)
-
-    output:
-        priority_flat, shape (B, H*W)
     """
 
     def __init__(
@@ -32,6 +22,7 @@ class EventDDTTokenPriorityAdapter(nn.Module):
         first_k_tokens=None,
     ):
         super().__init__()
+
         self.detach_tokens = detach_tokens
         self.rank_decay = rank_decay
         self.temperature = temperature
@@ -47,12 +38,6 @@ class EventDDTTokenPriorityAdapter(nn.Module):
         self.stage_scale = nn.Parameter(torch.ones(len(stage_dims)))
 
     def _make_rank_weights(self, K, device, dtype):
-        """
-        Larger weight for earlier tokens.
-
-        token 0 gets weight close to 1.
-        later tokens decay exponentially.
-        """
         if K == 1:
             return torch.ones(1, device=device, dtype=dtype)
 
@@ -67,10 +52,13 @@ class EventDDTTokenPriorityAdapter(nn.Module):
     def forward(self, x, event_tokens, stage_idx: int):
         """
         x:
-            B, C, H, W
+            SMamba stage feature map, B, C, H, W
 
         event_tokens:
-            B, K, D
+            EventDDT tokens, B, K, D
+
+        return:
+            priority_flat, B, H*W
         """
         if self.detach_tokens:
             event_tokens = event_tokens.detach()
@@ -81,35 +69,26 @@ class EventDDTTokenPriorityAdapter(nn.Module):
         B, C, H, W = x.shape
         K = event_tokens.shape[1]
 
-        # B, H*W, hidden_dim
         spatial_feat = self.stage_proj[stage_idx](x)
         spatial_feat = spatial_feat.flatten(2).transpose(1, 2)
 
-        # B, K, hidden_dim
         token_feat = self.token_proj(event_tokens)
 
         spatial_feat = F.normalize(spatial_feat, dim=-1)
         token_feat = F.normalize(token_feat, dim=-1)
 
-        # B, H*W, K
         sim = torch.bmm(spatial_feat, token_feat.transpose(1, 2))
 
-        # K
         rank_weights = self._make_rank_weights(
             K=K,
             device=sim.device,
             dtype=sim.dtype,
         )
 
-        # Add token-rank prior into similarity.
-        # Earlier tokens have larger log prior.
         log_rank_weights = torch.log(rank_weights.clamp_min(1e-6))
         weighted_logits = sim / self.temperature + log_rank_weights.view(1, 1, K)
 
-        # B, H*W
         priority_flat = torch.logsumexp(weighted_logits, dim=-1)
-
-        # Keep it positive for SMamba thresholding.
         priority_flat = F.softplus(priority_flat * self.stage_scale[stage_idx]) + 1e-6
 
         return priority_flat

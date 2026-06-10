@@ -43,6 +43,23 @@ model:
         dws_conv_only_hidden: True
         dws_conv_kernel_size: 3
         drop_cell_update: 0
+
+    eventddt_encoding:
+      enable: true
+      repo_root: /data4/yhtang/exp/EventDDT_Private
+      tokenizer_config_path: configs/tokenizer_config.yaml
+      experiment_config_path: configs/tokenizer_experiment/exp2_Event_Scratch_rev.yaml
+      dataset_config_path: configs/dataset/DSEC.yaml
+      ckpt_path: "/data4/yhtang/exp/EventDDT_Private/outputs_tok_v2.1/tok_dsec_exp/exp2_Event_scratch_rev_lb0p125_LRresume2/checkpoints/best_val_large_alpha-step=067000-val_large_alpha=0.3525.ckpt"
+
+      freeze: true
+      strict_load: false
+      disable_decoder_pretrained: true
+
+      tokenizer_t: 0.5
+      output_dtype: input
+      eventddt_cfg_override: null
+
     eventddt_priority:
       enable: true
       token_dim: 512
@@ -50,7 +67,7 @@ model:
       detach_tokens: true
       rank_decay: 3.0 # larger value means more belief in the first few tokens 
       temperature: 0.07 # similarity sharpness
-      first_k_tokens: 250 # if not null, only use first k tokens
+      first_k_tokens: 256 # if not null, only use first k tokens
   fpn:
     name: PAFPN
     compile:
