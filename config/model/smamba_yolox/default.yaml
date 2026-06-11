@@ -67,7 +67,7 @@ model:
       detach_tokens: true
       rank_decay: 3.0 # larger value means more belief in the first few tokens 
       temperature: 0.07 # similarity sharpness
-      first_k_tokens: 256 # if not null, only use first k tokens
+      first_k_tokens: null # if not null, only use first k tokens
   fpn:
     name: PAFPN
     compile:

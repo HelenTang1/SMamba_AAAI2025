@@ -181,8 +181,6 @@ class EventDDTEncodingBridge(nn.Module):
         print(f"  repo_root: {self.repo_root}")
         print(f"  experiment_config_path: {experiment_config_path}")
         print(f"  tokenizer_t: {self.tokenizer_t}")
-        print(f"  n_bins: {self.n_bins}")
-        print(f"  event_layout: {self.event_layout}")
 
 
     def forward(self, ev_tensor: torch.Tensor) -> torch.Tensor:
