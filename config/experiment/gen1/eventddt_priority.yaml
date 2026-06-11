@@ -1,0 +1,62 @@
+# @package _global_
+defaults:
+  - base
+
+wandb:
+  group_name: gen1_eventddt_priority
+  project_name: SMamba
+
+batch_size:
+  train: 4
+  eval: 4
+
+hardware:
+  gpus: 0
+  num_workers:
+    train: 6
+    eval: 2
+
+training:
+  precision: 16
+  max_steps: 400000
+  learning_rate: 0.0002
+
+validation:
+  val_check_interval: 5000
+  check_val_every_n_epoch: null
+
+dataset:
+  ev_repr_name: 'stacked_histogram_dt=50_nbins=10'
+  sequence_length: 21
+  resolution_hw: [240, 304]
+  downsample_by_factor_2: false
+  only_load_end_labels: false
+
+model:
+  backbone:
+    partition_split_32: 1
+    resolution_hw: [256, 320]
+
+    eventddt_encoding:
+      enable: true
+      repo_root: /data4/yhtang/exp/EventDDT_Private
+      tokenizer_config_path: configs/tokenizer_config.yaml
+      experiment_config_path: configs/tokenizer_experiment/exp2_Event_Scratch_rev.yaml
+      dataset_config_path: configs/dataset/GEN1.yaml
+      ckpt_path: "/data4/yhtang/exp/EventDDT_Private/outputs_tok_v2.1/tok_dsec_exp/exp2_Event_scratch_rev_lb0p125_LRresume2/checkpoints/best_val_large_alpha-step=067000-val_large_alpha=0.3525.ckpt"
+
+      freeze: true
+      strict_load: false
+      disable_decoder_pretrained: true
+      tokenizer_t: 0.5
+      output_dtype: input
+      eventddt_cfg_override: null
+
+    eventddt_priority:
+      enable: true
+      token_dim: 512
+      hidden_dim: 128
+      detach_tokens: true
+      rank_decay: 3.0
+      temperature: 0.07
+      first_k_tokens: null
