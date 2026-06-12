@@ -147,29 +147,16 @@ class EventDDTEncodingBridge(nn.Module):
         )
 
         with eventddt_import_context(self.repo_root):
-            from models.build_model import (
-                build_tokenizer_model,
-                load_tokenizer_encoder_only,
+            from models.build_model import build_tokenizer_model
+
+            ckpt_path = _resolve_eventddt_path(self.repo_root, ckpt_path)
+            cfg.tokenizer.tokenizer_encoder_ckpt_path = ckpt_path
+            cfg.tokenizer.tokenizer_encoder_strict = strict_load
+            cfg.tokenizer.freeze_tokenizer_encoder = self.freeze
+            cfg.tokenizer.include_event_pretrained = (
+                cfg.tokenizer.get("event_pretrained_config", None) is not None
             )
-            from models.event_compact_tokenizer import EventCompactTokenizer
-
             event_tokenizer = build_tokenizer_model(cfg, encoder_only=True)
-            if isinstance(event_tokenizer, EventCompactTokenizer):
-                include_event_pretrained = True
-            else:
-                include_event_pretrained = False
-            
-
-            if ckpt_path is not None:
-                ckpt_path = _resolve_eventddt_path(self.repo_root, ckpt_path)
-
-                load_tokenizer_encoder_only(
-                    tokenizer=event_tokenizer,
-                    ckpt_path=ckpt_path,
-                    strict=strict_load,
-                    freeze_encoder=self.freeze,
-                    include_event_pretrained=include_event_pretrained,
-                )
         self.event_tokenizer = event_tokenizer
 
         if freeze:
