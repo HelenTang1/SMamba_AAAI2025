@@ -70,7 +70,7 @@ model:
       no_decay_first_tokens: null
       temperature: 0.07 # similarity sharpness
       first_k_tokens: null # if not null, only use first k tokens
-      gate_strength: 0.1
+      gate_strength: 0.2
   fpn:
     name: PAFPN
     compile:
@@ -93,3 +93,16 @@ model:
   postprocess:
     confidence_threshold: 0.1
     nms_threshold: 0.45
+
+
+  pretrained_smamba:
+    enable: false
+    ckpt_path: null
+    # Load old SMamba detector weights, but do not load EventDDT adapter weights.
+    exclude_keywords:
+      - eventddt_priority
+      - eventddt_encoder
+    # Freeze everything except eventddt_priority adapter.
+    train_adapter_only: false
+    # Keep frozen backbone/FPN/head in eval mode so BatchNorm stats do not drift.
+    keep_frozen_eval: true

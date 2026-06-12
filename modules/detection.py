@@ -42,11 +42,157 @@ class Module(pl.LightningModule):
         else:
             self.eventddt_encoder = None
 
+        self._maybe_load_pretrained_smamba()
+        self._maybe_setup_adapter_only_training()
+
         self.mode_2_rnn_states: Dict[Mode, RNNStates] = {
             Mode.TRAIN: RNNStates(),
             Mode.VAL: RNNStates(),
             Mode.TEST: RNNStates(),
         }
+
+    def _set_frozen_modules_eval(self) -> None:
+        cfg = self._get_pretrained_smamba_cfg()
+        if cfg is None:
+            return
+        if not cfg.get("train_adapter_only", False):
+            return
+        if not cfg.get("keep_frozen_eval", True):
+            return
+
+        # Put the whole detector into eval first.
+        self.mdl.eval()
+
+        # Then put only the adapter back to train mode.
+        if hasattr(self.mdl.backbone, "eventddt_priority") and self.mdl.backbone.eventddt_priority is not None:
+            self.mdl.backbone.eventddt_priority.train()
+
+        if self.eventddt_encoder is not None:
+            self.eventddt_encoder.eval()
+
+
+    def on_train_epoch_start(self) -> None:
+        self._set_frozen_modules_eval()
+
+    def _get_pretrained_smamba_cfg(self):
+        cfg = self.mdl_config.get("pretrained_smamba", None)
+        if cfg is None:
+            return None
+        if not cfg.get("enable", False):
+            return None
+        return cfg
+
+
+    def _maybe_load_pretrained_smamba(self) -> None:
+        cfg = self._get_pretrained_smamba_cfg()
+        if cfg is None:
+            return
+
+        ckpt_path = cfg.get("ckpt_path", None)
+        if ckpt_path is None:
+            raise ValueError("model.pretrained_smamba.enable=True, but ckpt_path is null.")
+
+        print(f"[Pretrained SMamba] loading checkpoint: {ckpt_path}")
+
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        state_dict = ckpt.get("state_dict", ckpt)
+
+        exclude_keywords = list(cfg.get("exclude_keywords", []))
+
+        current_state = self.mdl.state_dict()
+        load_state = {}
+        skipped = []
+
+        for key, value in state_dict.items():
+            # Lightning checkpoint usually has keys like:
+            #   mdl.backbone.xxx
+            #   mdl.fpn.xxx
+            #   mdl.yolox_head.xxx
+            if key.startswith("mdl."):
+                new_key = key[len("mdl."):]
+            else:
+                new_key = key
+
+            if any(ex_kw in new_key for ex_kw in exclude_keywords):
+                skipped.append((key, "excluded"))
+                continue
+
+            if new_key not in current_state:
+                skipped.append((key, "not_in_current_model"))
+                continue
+
+            if current_state[new_key].shape != value.shape:
+                skipped.append((key, f"shape_mismatch {tuple(value.shape)} vs {tuple(current_state[new_key].shape)}"))
+                continue
+
+            load_state[new_key] = value
+
+        missing, unexpected = self.mdl.load_state_dict(load_state, strict=False)
+
+        print(f"[Pretrained SMamba] loaded tensors: {len(load_state)}")
+        print(f"[Pretrained SMamba] skipped tensors: {len(skipped)}")
+        print(f"[Pretrained SMamba] missing keys: {len(missing)}")
+        print(f"[Pretrained SMamba] unexpected keys: {len(unexpected)}")
+
+        # Print only a few examples to avoid flooding stdout.
+        if len(missing) > 0:
+            print("[Pretrained SMamba] missing examples:")
+            for k in list(missing)[:20]:
+                print(f"  {k}")
+
+        if len(skipped) > 0:
+            print("[Pretrained SMamba] skipped examples:")
+            for k, reason in skipped[:20]:
+                print(f"  {k}: {reason}")
+
+
+    def _maybe_setup_adapter_only_training(self) -> None:
+        cfg = self._get_pretrained_smamba_cfg()
+        if cfg is None:
+            return
+
+        if not cfg.get("train_adapter_only", False):
+            return
+
+        print("[Adapter-only training] freezing all parameters first.")
+
+        for name, p in self.named_parameters():
+            p.requires_grad_(False)
+
+        # EventDDT encoder should remain frozen.
+        if self.eventddt_encoder is not None:
+            self.eventddt_encoder.eval()
+            for p in self.eventddt_encoder.parameters():
+                p.requires_grad_(False)
+
+        # Only train EventDDT priority adapter.
+        if not hasattr(self.mdl.backbone, "eventddt_priority") or self.mdl.backbone.eventddt_priority is None:
+            raise RuntimeError(
+                "model.pretrained_smamba.train_adapter_only=True, "
+                "but self.mdl.backbone.eventddt_priority is None. "
+                "Check model.backbone.eventddt_priority.enable=True."
+            )
+
+        for name, p in self.mdl.backbone.eventddt_priority.named_parameters():
+            p.requires_grad_(True)
+            print(f"[Adapter-only training] trainable: mdl.backbone.eventddt_priority.{name}")
+
+        self._print_trainable_parameter_summary()
+
+
+    def _print_trainable_parameter_summary(self) -> None:
+        total = 0
+        trainable = 0
+
+        print("[Trainable parameter summary]")
+        for name, p in self.named_parameters():
+            n = p.numel()
+            total += n
+            if p.requires_grad:
+                trainable += n
+                print(f"  trainable: {name}, shape={tuple(p.shape)}, numel={n}")
+
+        print(f"[Trainable parameter summary] trainable={trainable:,} / total={total:,}")
 
     def setup(self, stage: Optional[str] = None) -> None:
         dataset_name = self.full_config.dataset.name
@@ -126,6 +272,7 @@ class Module(pl.LightningModule):
         return self.eventddt_encoder(ev_tensors)
     
     def training_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
+        self._set_frozen_modules_eval()
         batch = merge_mixed_batches(batch)
         data = self.get_data_from_batch(batch)
         worker_id = self.get_worker_id_from_batch(batch)
@@ -391,7 +538,13 @@ class Module(pl.LightningModule):
     def configure_optimizers(self) -> Any:
         lr = self.train_config.learning_rate
         weight_decay = self.train_config.weight_decay
-        optimizer = th.optim.AdamW(self.mdl.parameters(), lr=lr, weight_decay=weight_decay)
+
+        trainable_params = [p for p in self.parameters() if p.requires_grad]
+
+        if len(trainable_params) == 0:
+            raise RuntimeError("No trainable parameters found. Check adapter-only freeze settings.")
+
+        optimizer = th.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
 
         scheduler_params = self.train_config.lr_scheduler
         if not scheduler_params.use:
@@ -400,9 +553,9 @@ class Module(pl.LightningModule):
         total_steps = scheduler_params.total_steps
         assert total_steps is not None
         assert total_steps > 0
-        # Here we interpret the final lr as max_lr/final_div_factor.
-        # Note that Pytorch OneCycleLR interprets it as initial_lr/final_div_factor:
+
         final_div_factor_pytorch = scheduler_params.final_div_factor / scheduler_params.div_factor
+
         lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer=optimizer,
             max_lr=lr,
@@ -411,7 +564,9 @@ class Module(pl.LightningModule):
             total_steps=total_steps,
             pct_start=scheduler_params.pct_start,
             cycle_momentum=False,
-            anneal_strategy='linear')
+            anneal_strategy='linear'
+        )
+
         lr_scheduler_config = {
             "scheduler": lr_scheduler,
             "interval": "step",

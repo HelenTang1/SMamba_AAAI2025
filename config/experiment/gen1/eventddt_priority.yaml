@@ -11,3 +11,7 @@ model:
 
     eventddt_priority:
       enable: true
+  pretrained_smamba:
+    enable: true
+    ckpt_path: "/data4/yhtang/exp/EventDDT_Private/submodules/SMamba/SMamba/4eiigaaf/checkpoints/epoch=006-step=285000-val_AP=0.52.ckpt"
+    train_adapter_only: true
