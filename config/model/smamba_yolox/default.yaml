@@ -66,8 +66,11 @@ model:
       hidden_dim: 128
       detach_tokens: true
       rank_decay: 3.0 # larger value means more belief in the first few tokens 
+      no_decay_first_ratio: 0.125
+      no_decay_first_tokens: null
       temperature: 0.07 # similarity sharpness
       first_k_tokens: null # if not null, only use first k tokens
+      gate_strength: 0.1
   fpn:
     name: PAFPN
     compile:

@@ -81,6 +81,9 @@ class RNNDetector(BaseDetector):
                 rank_decay=priority_cfg.get("rank_decay", 3.0),
                 temperature=priority_cfg.get("temperature", 0.07),
                 first_k_tokens=priority_cfg.get("first_k_tokens", None),
+                no_decay_first_ratio=priority_cfg.get("no_decay_first_ratio", 0.125),
+                no_decay_first_tokens=priority_cfg.get("no_decay_first_tokens", None),
+                gate_strength=priority_cfg.get("gate_strength", 0.1),
             )
         else:
             self.eventddt_priority = None
@@ -196,7 +199,35 @@ class RNNDetector(BaseDetector):
             (nn.Identity() if channel_first else Permute(0, 2, 3, 1)),
             (norm_layer(embed_dim) if patch_norm else nn.Identity()),
         )
+    def _apply_eventddt_priority_gate(
+        self,
+        x: torch.Tensor,
+        priority_flat: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Differentiable path from detection loss to EventDDT priority adapter.
 
+        priority_flat is still used for top-k / sorting, which is not differentiable.
+        This gate makes priority_flat also affect the feature values directly.
+        """
+        if self.eventddt_priority is None:
+            return x
+
+        gate_strength = getattr(self.eventddt_priority, "gate_strength", 0.0)
+
+        if gate_strength is None or gate_strength <= 0:
+            return x
+
+        B, C, H, W = x.shape
+
+        priority = priority_flat.float()
+        priority = priority - priority.mean(dim=1, keepdim=True)
+        priority = priority / priority.std(dim=1, keepdim=True).clamp_min(1e-6)
+
+        gate = 1.0 + float(gate_strength) * torch.tanh(priority)
+        gate = gate.view(B, 1, H, W).to(dtype=x.dtype, device=x.device)
+
+        return x * gate
     def _make_sparse_scan_indices_from_priority(
         self,
         priority_flat: torch.Tensor,
@@ -299,12 +330,22 @@ class RNNDetector(BaseDetector):
                 # Spatial Continuity Assessment
                 blur_layer = get_gaussian_kernel(kernel_size=self.gaussian_kernel).to(device=x_time.device, dtype=x_time.dtype)
                 x_time = blur_layer(x_time)
-            use_eventddt_priority_now = (
-                self.use_eventddt_priority
-                and eventddt_tokens is not None
-            )
+            if stage_idx == 0 and not hasattr(self, "_printed_eventddt_debug"):
+                print(
+                    "[SMamba EventDDT debug]",
+                    "use_eventddt_priority=", self.use_eventddt_priority,
+                    "eventddt_tokens is None=", eventddt_tokens is None,
+                    "eventddt_tokens shape=", None if eventddt_tokens is None else eventddt_tokens.shape,
+                )
+                self._printed_eventddt_debug = True
 
-            if use_eventddt_priority_now:
+            if self.use_eventddt_priority:
+                if eventddt_tokens is None:
+                    raise RuntimeError(
+                        "model.backbone.eventddt_priority.enable=True, "
+                        "but eventddt_tokens is None. "
+                        "Check model.backbone.eventddt_encoding.enable."
+                    )
                 # x is current SMamba stage feature map: B, C, H, W
                 Bx, Cx, Hx, Wx = x.shape
 
@@ -313,6 +354,14 @@ class RNNDetector(BaseDetector):
                     x=x,
                     event_tokens=eventddt_tokens,
                     stage_idx=stage_idx,
+                )
+
+                # Differentiable path for training the EventDDT priority adapter.
+                # This does not replace top-k / argsort; it only lets detection loss
+                # train the priority adapter through feature modulation.
+                x = self._apply_eventddt_priority_gate(
+                    x=x,
+                    priority_flat=priority_flat,
                 )
 
                 priority_map = priority_flat.view(Bx, 1, Hx, Wx)
@@ -362,7 +411,7 @@ class RNNDetector(BaseDetector):
             stage_number = stage_idx + 1
             output[stage_number] = x_fpn
 
-            if not use_eventddt_priority_now:
+            if not self.use_eventddt_priority:
                 x_time = self.index_down(x_time)
                 B, C, H, W = x_time.shape
         return output, states
