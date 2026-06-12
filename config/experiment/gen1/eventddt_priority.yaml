@@ -6,6 +6,7 @@ defaults:
 model:
     eventddt_encoding:
       enable: true
+      dataset_config_path: configs/dataset/GEN1.yaml
 
     eventddt_priority:
       enable: true
