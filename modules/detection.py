@@ -60,15 +60,33 @@ class Module(pl.LightningModule):
         if not cfg.get("keep_frozen_eval", True):
             return
 
-        # Put the whole detector into eval first.
-        self.mdl.eval()
+        # Important:
+        # Do NOT call self.mdl.eval().
+        # YoloXDetector.forward_detect() uses self.mdl.training to decide
+        # whether to compute losses. If self.mdl.training=False, losses=None.
+        self.mdl.train()
 
-        # Then put only the adapter back to train mode.
+        # EventDDT encoder stays frozen/eval.
+        if self.eventddt_encoder is not None:
+            self.eventddt_encoder.eval()
+
+        # Adapter must stay in train mode.
         if hasattr(self.mdl.backbone, "eventddt_priority") and self.mdl.backbone.eventddt_priority is not None:
             self.mdl.backbone.eventddt_priority.train()
 
-        if self.eventddt_encoder is not None:
-            self.eventddt_encoder.eval()
+        # Freeze BatchNorm running stats for frozen modules.
+        # This avoids BN drift while keeping YOLOX in training mode for loss computation.
+        for module in self.mdl.modules():
+            if isinstance(
+                module,
+                (
+                    torch.nn.BatchNorm1d,
+                    torch.nn.BatchNorm2d,
+                    torch.nn.BatchNorm3d,
+                    torch.nn.SyncBatchNorm,
+                ),
+            ):
+                module.eval()
 
 
     def on_train_epoch_start(self) -> None:
@@ -335,6 +353,9 @@ class Module(pl.LightningModule):
         selected_backbone_features = backbone_feature_selector.get_batched_backbone_features()
         labels_yolox = ObjectLabels.get_labels_as_batched_tensor(obj_label_list=obj_labels, format_='yolox')
         labels_yolox = labels_yolox.to(dtype=self.dtype)
+
+        assert self.mdl.training, "self.mdl is in eval mode, YOLOX will not compute losses."
+        assert self.mdl.yolox_head.training, "YOLOX head is in eval mode, losses may be None."
 
         predictions, losses = self.mdl.forward_detect(backbone_features=selected_backbone_features,
                                                       targets=labels_yolox)
