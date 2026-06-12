@@ -45,7 +45,7 @@ model:
         drop_cell_update: 0
 
     eventddt_encoding:
-      enable: true
+      enable: false
       repo_root: /data4/yhtang/exp/EventDDT_Private
       tokenizer_config_path: configs/tokenizer_config.yaml
       experiment_config_path: configs/tokenizer_experiment/exp2_Event_Scratch_rev.yaml
@@ -61,7 +61,7 @@ model:
       eventddt_cfg_override: null
 
     eventddt_priority:
-      enable: true
+      enable: false
       token_dim: 512
       hidden_dim: 128
       detach_tokens: true
