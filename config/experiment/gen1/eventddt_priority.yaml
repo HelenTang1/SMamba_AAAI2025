@@ -4,6 +4,7 @@ defaults:
 
 
 model:
+  backbone:
     eventddt_encoding:
       enable: true
       dataset_config_path: configs/dataset/GEN1.yaml
